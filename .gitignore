@@ -1,0 +1,4 @@
+.env
+sheets-key.json
+node_modules
+*.log
