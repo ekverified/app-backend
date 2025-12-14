@@ -2,7 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const { GoogleSpreadsheet } = require('google-spreadsheet');
-const { JWT } = require('google-auth-library'); // Add this import for v4+ auth
+const { JWT } = require('google-auth-library');
 const jwt = require('jsonwebtoken');
 const CryptoJS = require('crypto-js');
 
@@ -427,12 +427,6 @@ app.delete('/members/:name', async (req, res) => {
   }
 });
 
-const PORT = process.env.PORT || 3000;
-if (typeof serverless !== 'undefined') {
-  // Optional: If using serverless-http for better compatibility
-  const serverless = require('serverless-http');
-  module.exports.handler = serverless(app);
-} else {
-  app.listen(PORT, () => console.log(`Server on port ${PORT}`));
-  module.exports = app; // For Vercel API route
-}
+// Vercel serverless export (required for /api/* routing)
+const serverless = require('serverless-http');
+module.exports.handler = serverless(app);
