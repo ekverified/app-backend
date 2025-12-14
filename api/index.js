@@ -38,7 +38,7 @@ async function initSheets() {
 initSheets().catch(err => console.error('Startup Sheets init error:', err));
 
 // Auth (PIN login from Members tab)
-app.post('/api/auth', async (req, res) => {
+app.post('/auth', async (req, res) => {
   const { pin } = req.body;
   try {
     if (!doc) await initSheets();
@@ -60,7 +60,7 @@ app.post('/api/auth', async (req, res) => {
 });
 
 // News (dashboard comms)
-app.get('/api/news', async (req, res) => {
+app.get('/news', async (req, res) => {
   try {
     if (!doc) await initSheets();
     await doc.loadInfo();
@@ -73,7 +73,7 @@ app.get('/api/news', async (req, res) => {
   }
 });
 
-app.post('/api/news', async (req, res) => {
+app.post('/news', async (req, res) => {
   const { text, signed_by } = req.body;
   try {
     if (!doc) await initSheets();
@@ -88,7 +88,7 @@ app.post('/api/news', async (req, res) => {
 });
 
 // Welfare (claims)
-app.get('/api/welfare', async (req, res) => {
+app.get('/welfare', async (req, res) => {
   const { member } = req.query;
   try {
     if (!doc) await initSheets();
@@ -103,7 +103,7 @@ app.get('/api/welfare', async (req, res) => {
   }
 });
 
-app.post('/api/welfare', async (req, res) => {
+app.post('/welfare', async (req, res) => {
   const { type, amount, member } = req.body;
   try {
     if (!doc) await initSheets();
@@ -118,7 +118,7 @@ app.post('/api/welfare', async (req, res) => {
 });
 
 // Polls (elections)
-app.get('/api/polls', async (req, res) => {
+app.get('/polls', async (req, res) => {
   try {
     if (!doc) await initSheets();
     await doc.loadInfo();
@@ -138,7 +138,7 @@ app.get('/api/polls', async (req, res) => {
   }
 });
 
-app.post('/api/polls', async (req, res) => {
+app.post('/polls', async (req, res) => {
   const { question, options } = req.body;
   try {
     if (!doc) await initSheets();
@@ -160,7 +160,7 @@ app.post('/api/polls', async (req, res) => {
 });
 
 // Transactions
-app.get('/api/transactions', async (req, res) => {
+app.get('/transactions', async (req, res) => {
   const { member } = req.query;
   try {
     if (!doc) await initSheets();
@@ -175,7 +175,7 @@ app.get('/api/transactions', async (req, res) => {
   }
 });
 
-app.post('/api/transactions', async (req, res) => {
+app.post('/transactions', async (req, res) => {
   const { title, date, amount, type, member } = req.body;
   try {
     if (!doc) await initSheets();
@@ -190,7 +190,7 @@ app.post('/api/transactions', async (req, res) => {
 });
 
 // Approved Reports
-app.get('/api/approved-reports', async (req, res) => {
+app.get('/approved-reports', async (req, res) => {
   try {
     if (!doc) await initSheets();
     await doc.loadInfo();
@@ -203,7 +203,7 @@ app.get('/api/approved-reports', async (req, res) => {
   }
 });
 
-app.post('/api/approved-reports', async (req, res) => {
+app.post('/approved-reports', async (req, res) => {
   const { text, file, signed_by } = req.body;
   try {
     if (!doc) await initSheets();
@@ -218,7 +218,7 @@ app.post('/api/approved-reports', async (req, res) => {
 });
 
 // Chair Queue
-app.get('/api/chair-queue', async (req, res) => {
+app.get('/chair-queue', async (req, res) => {
   try {
     if (!doc) await initSheets();
     await doc.loadInfo();
@@ -231,7 +231,7 @@ app.get('/api/chair-queue', async (req, res) => {
   }
 });
 
-app.post('/api/chair-queue', async (req, res) => {
+app.post('/chair-queue', async (req, res) => {
   const { type, data, author } = req.body;
   try {
     if (!doc) await initSheets();
@@ -245,7 +245,7 @@ app.post('/api/chair-queue', async (req, res) => {
   }
 });
 
-app.delete('/api/chair-queue/:rowIndex', async (req, res) => {
+app.delete('/chair-queue/:rowIndex', async (req, res) => {
   const { rowIndex } = req.params;
   try {
     if (!doc) await initSheets();
@@ -262,7 +262,7 @@ app.delete('/api/chair-queue/:rowIndex', async (req, res) => {
 });
 
 // Logs
-app.get('/api/logs', async (req, res) => {
+app.get('/logs', async (req, res) => {
   try {
     if (!doc) await initSheets();
     await doc.loadInfo();
@@ -275,7 +275,7 @@ app.get('/api/logs', async (req, res) => {
   }
 });
 
-app.post('/api/logs', async (req, res) => {
+app.post('/logs', async (req, res) => {
   const { action, by, details } = req.body;
   try {
     if (!doc) await initSheets();
@@ -290,7 +290,7 @@ app.post('/api/logs', async (req, res) => {
 });
 
 // Notifications
-app.get('/api/notifications', async (req, res) => {
+app.get('/notifications', async (req, res) => {
   const { member } = req.query;
   try {
     if (!doc) await initSheets();
@@ -305,7 +305,7 @@ app.get('/api/notifications', async (req, res) => {
   }
 });
 
-app.post('/api/notifications', async (req, res) => {
+app.post('/notifications', async (req, res) => {
   const { message, member } = req.body;
   try {
     if (!doc) await initSheets();
@@ -319,7 +319,7 @@ app.post('/api/notifications', async (req, res) => {
   }
 });
 
-app.patch('/api/notifications/:rowIndex/read', async (req, res) => {
+app.patch('/notifications/:rowIndex/read', async (req, res) => {
   const { rowIndex } = req.params;
   try {
     if (!doc) await initSheets();
@@ -337,7 +337,7 @@ app.patch('/api/notifications/:rowIndex/read', async (req, res) => {
 });
 
 // Loans
-app.get('/api/loans', async (req, res) => {
+app.get('/loans', async (req, res) => {
   const { member } = req.query;
   try {
     if (!doc) await initSheets();
@@ -352,7 +352,7 @@ app.get('/api/loans', async (req, res) => {
   }
 });
 
-app.post('/api/loans', async (req, res) => {
+app.post('/loans', async (req, res) => {
   const { amount, purpose, member } = req.body;
   try {
     if (!doc) await initSheets();
@@ -367,7 +367,7 @@ app.post('/api/loans', async (req, res) => {
 });
 
 // Signatures
-app.get('/api/signatures', async (req, res) => {
+app.get('/signatures', async (req, res) => {
   try {
     if (!doc) await initSheets();
     await doc.loadInfo();
@@ -380,7 +380,7 @@ app.get('/api/signatures', async (req, res) => {
   }
 });
 
-app.patch('/api/signatures/:role', async (req, res) => {
+app.patch('/signatures/:role', async (req, res) => {
   const { role } = req.params;
   const { signature } = req.body;
   try {
@@ -403,7 +403,7 @@ app.patch('/api/signatures/:role', async (req, res) => {
 });
 
 // Members (admin add/remove)
-app.post('/api/members', async (req, res) => {
+app.post('/members', async (req, res) => {
   const { name, email, pin } = req.body;
   try {
     if (!doc) await initSheets();
@@ -417,7 +417,7 @@ app.post('/api/members', async (req, res) => {
   }
 });
 
-app.delete('/api/members/:name', async (req, res) => {
+app.delete('/members/:name', async (req, res) => {
   const { name } = req.params;
   try {
     if (!doc) await initSheets();
