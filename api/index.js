@@ -5,8 +5,17 @@ const { GoogleSpreadsheet } = require('google-spreadsheet');
 const { JWT } = require('google-auth-library');
 const jwt = require('jsonwebtoken');
 const CryptoJS = require('crypto-js');
+const { inject } = require('@vercel/analytics');
 
 const app = express();
+
+// Initialize Vercel Web Analytics
+try {
+  inject();
+} catch (error) {
+  console.warn('Vercel Web Analytics initialization skipped (not in Vercel environment):', error.message);
+}
+
 app.use(cors());
 app.use(express.json());
 
