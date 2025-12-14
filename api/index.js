@@ -4,22 +4,17 @@ const cors = require('cors');
 const { GoogleSpreadsheet } = require('google-spreadsheet');
 const jwt = require('jsonwebtoken');
 const CryptoJS = require('crypto-js');
-
 const app = express();
 app.use(cors());
 app.use(express.json());
-
 const SHEET_ID = '1Hai7HwRk6moq-55LASLrXl8ot8VYwRKgBurJowPm9Ws'; // Matches your Google Sheet
 const JWT_SECRET = process.env.JWT_SECRET || 'supersecret_change_in_prod';
-
 // Load service account from env var (stringified JSON)
 const serviceAccount = JSON.parse(process.env.SHEETS_KEY_JSON || '{}');
-
 // Optional: Log if auth is missing (for Vercel logs)
 if (Object.keys(serviceAccount).length === 0) {
   console.error('WARNING: Missing SHEETS_KEY_JSON env var - Google Sheets auth will fail');
 }
-
 // Init doc globally, but don't throw on startup - handle per-route
 let doc;
 async function initSheets() {
@@ -33,10 +28,8 @@ async function initSheets() {
     // Don't crash the server - routes will handle errors
   }
 }
-
 // Call init on startup (non-blocking)
 initSheets().catch(err => console.error('Startup Sheets init error:', err));
-
 // Auth (PIN login from Members tab)
 app.post('/auth', async (req, res) => {
   const { pin } = req.body;
@@ -58,7 +51,6 @@ app.post('/auth', async (req, res) => {
     res.status(500).json({ error: 'Auth failed - check Sheets access' });
   }
 });
-
 // News (dashboard comms)
 app.get('/news', async (req, res) => {
   try {
@@ -72,7 +64,6 @@ app.get('/news', async (req, res) => {
     res.status(500).json({ error: 'Failed to fetch news' });
   }
 });
-
 app.post('/news', async (req, res) => {
   const { text, signed_by } = req.body;
   try {
@@ -86,7 +77,6 @@ app.post('/news', async (req, res) => {
     res.status(500).json({ error: 'Failed to post news' });
   }
 });
-
 // Welfare (claims)
 app.get('/welfare', async (req, res) => {
   const { member } = req.query;
@@ -96,13 +86,12 @@ app.get('/welfare', async (req, res) => {
     const welfareSheet = doc.sheetsByTitle['Welfare'];
     const rows = await welfareSheet.getRows();
     const userRows = rows.filter(row => row.Member === member);
-    res.json(userRows.map(row => ({ Type: row.Type, Amount: row.Amount, Member: row.Member, Status: row.Status, Date: row.Date })));
+    res.json(userRows.map(row => ({ type: row.Type, amount: row.Amount, member: row.Member, status: row.Status, date: row.Date })));
   } catch (error) {
     console.error('Welfare fetch error:', error);
     res.status(500).json({ error: 'Failed to fetch welfare' });
   }
 });
-
 app.post('/welfare', async (req, res) => {
   const { type, amount, member } = req.body;
   try {
@@ -116,7 +105,6 @@ app.post('/welfare', async (req, res) => {
     res.status(500).json({ error: 'Failed to submit welfare' });
   }
 });
-
 // Polls (elections)
 app.get('/polls', async (req, res) => {
   try {
@@ -137,7 +125,6 @@ app.get('/polls', async (req, res) => {
     res.status(500).json({ error: 'Failed to fetch polls' });
   }
 });
-
 app.post('/polls', async (req, res) => {
   const { question, options } = req.body;
   try {
@@ -158,7 +145,6 @@ app.post('/polls', async (req, res) => {
     res.status(500).json({ error: 'Failed to create poll' });
   }
 });
-
 // Transactions
 app.get('/transactions', async (req, res) => {
   const { member } = req.query;
@@ -168,13 +154,12 @@ app.get('/transactions', async (req, res) => {
     const transactionsSheet = doc.sheetsByTitle['Transactions'];
     const rows = await transactionsSheet.getRows();
     const userRows = rows.filter(row => row.Member === member);
-    res.json(userRows.map(row => ({ Title: row.Title, Date: row.Date, Amount: row.Amount, Type: row.Type, Member: row.Member })));
+    res.json(userRows.map(row => ({ t: row.Title, d: row.Date, a: row.Amount, type: row.Type, member: row.Member })));
   } catch (error) {
     console.error('Transactions fetch error:', error);
     res.status(500).json({ error: 'Failed to fetch transactions' });
   }
 });
-
 app.post('/transactions', async (req, res) => {
   const { title, date, amount, type, member } = req.body;
   try {
@@ -188,7 +173,6 @@ app.post('/transactions', async (req, res) => {
     res.status(500).json({ error: 'Failed to add transaction' });
   }
 });
-
 // Approved Reports
 app.get('/approved-reports', async (req, res) => {
   try {
@@ -196,13 +180,12 @@ app.get('/approved-reports', async (req, res) => {
     await doc.loadInfo();
     const reportsSheet = doc.sheetsByTitle['ApprovedReports'];
     const rows = await reportsSheet.getRows();
-    res.json(rows.map(row => ({ Text: row.Text, File: row.File, SignedBy: row.SignedBy })));
+    res.json(rows.map(row => ({ text: row.Text, file: row.File, signedBy: row.SignedBy })));
   } catch (error) {
     console.error('Reports fetch error:', error);
     res.status(500).json({ error: 'Failed to fetch reports' });
   }
 });
-
 app.post('/approved-reports', async (req, res) => {
   const { text, file, signed_by } = req.body;
   try {
@@ -216,7 +199,6 @@ app.post('/approved-reports', async (req, res) => {
     res.status(500).json({ error: 'Failed to add report' });
   }
 });
-
 // Chair Queue
 app.get('/chair-queue', async (req, res) => {
   try {
@@ -224,13 +206,12 @@ app.get('/chair-queue', async (req, res) => {
     await doc.loadInfo();
     const queueSheet = doc.sheetsByTitle['ChairQueue'];
     const rows = await queueSheet.getRows();
-    res.json(rows.map(row => ({ Type: row.Type, Data: JSON.parse(row.Data || '{}'), Author: row.Author })));
+    res.json(rows.map(row => ({ type: row.Type, data: JSON.parse(row.Data || '{}'), author: row.Author })));
   } catch (error) {
     console.error('Chair queue fetch error:', error);
     res.status(500).json({ error: 'Failed to fetch queue' });
   }
 });
-
 app.post('/chair-queue', async (req, res) => {
   const { type, data, author } = req.body;
   try {
@@ -244,7 +225,6 @@ app.post('/chair-queue', async (req, res) => {
     res.status(500).json({ error: 'Failed to add to queue' });
   }
 });
-
 app.delete('/chair-queue/:rowIndex', async (req, res) => {
   const { rowIndex } = req.params;
   try {
@@ -260,7 +240,6 @@ app.delete('/chair-queue/:rowIndex', async (req, res) => {
     res.status(500).json({ error: 'Failed to approve' });
   }
 });
-
 // Logs
 app.get('/logs', async (req, res) => {
   try {
@@ -268,13 +247,12 @@ app.get('/logs', async (req, res) => {
     await doc.loadInfo();
     const logsSheet = doc.sheetsByTitle['Logs'];
     const rows = await logsSheet.getRows();
-    res.json(rows.map(row => ({ Action: row.Action, By: row.By, Details: row.Details, Timestamp: row.Timestamp })));
+    res.json(rows.map(row => ({ action: row.Action, by: row.By, details: row.Details, timestamp: row.Timestamp })));
   } catch (error) {
     console.error('Logs fetch error:', error);
     res.status(500).json({ error: 'Failed to fetch logs' });
   }
 });
-
 app.post('/logs', async (req, res) => {
   const { action, by, details } = req.body;
   try {
@@ -288,7 +266,6 @@ app.post('/logs', async (req, res) => {
     res.status(500).json({ error: 'Failed to log' });
   }
 });
-
 // Notifications
 app.get('/notifications', async (req, res) => {
   const { member } = req.query;
@@ -298,13 +275,12 @@ app.get('/notifications', async (req, res) => {
     const notifsSheet = doc.sheetsByTitle['Notifications'];
     const rows = await notifsSheet.getRows();
     const userRows = rows.filter(row => row.Member === member);
-    res.json(userRows.map(row => ({ Message: row.Message, Read: row.Read === 'TRUE' })));
+    res.json(userRows.map(row => ({ id: row.rowNumber - 1, msg: row.Message, read: row.Read === 'TRUE' })));
   } catch (error) {
     console.error('Notifications fetch error:', error);
     res.status(500).json({ error: 'Failed to fetch notifications' });
   }
 });
-
 app.post('/notifications', async (req, res) => {
   const { message, member } = req.body;
   try {
@@ -318,7 +294,6 @@ app.post('/notifications', async (req, res) => {
     res.status(500).json({ error: 'Failed to add notification' });
   }
 });
-
 app.patch('/notifications/:rowIndex/read', async (req, res) => {
   const { rowIndex } = req.params;
   try {
@@ -335,7 +310,6 @@ app.patch('/notifications/:rowIndex/read', async (req, res) => {
     res.status(500).json({ error: 'Failed to mark read' });
   }
 });
-
 // Loans
 app.get('/loans', async (req, res) => {
   const { member } = req.query;
@@ -345,13 +319,12 @@ app.get('/loans', async (req, res) => {
     const loansSheet = doc.sheetsByTitle['Loans'];
     const rows = await loansSheet.getRows();
     const userRows = rows.filter(row => row.Member === member);
-    res.json(userRows.map(row => ({ Amount: row.Amount, Purpose: row.Purpose, Member: row.Member, Status: row.Status, Date: row.Date })));
+    res.json(userRows.map(row => ({ amount: row.Amount, purpose: row.Purpose, member: row.Member, status: row.Status, date: row.Date })));
   } catch (error) {
     console.error('Loans fetch error:', error);
     res.status(500).json({ error: 'Failed to fetch loans' });
   }
 });
-
 app.post('/loans', async (req, res) => {
   const { amount, purpose, member } = req.body;
   try {
@@ -365,7 +338,6 @@ app.post('/loans', async (req, res) => {
     res.status(500).json({ error: 'Failed to submit loan' });
   }
 });
-
 // Signatures
 app.get('/signatures', async (req, res) => {
   try {
@@ -379,7 +351,6 @@ app.get('/signatures', async (req, res) => {
     res.status(500).json({ error: 'Failed to fetch signatures' });
   }
 });
-
 app.patch('/signatures/:role', async (req, res) => {
   const { role } = req.params;
   const { signature } = req.body;
@@ -401,7 +372,6 @@ app.patch('/signatures/:role', async (req, res) => {
     res.status(500).json({ error: 'Failed to update signature' });
   }
 });
-
 // Members (admin add/remove)
 app.post('/members', async (req, res) => {
   const { name, email, pin } = req.body;
@@ -416,7 +386,6 @@ app.post('/members', async (req, res) => {
     res.status(500).json({ error: 'Failed to add member' });
   }
 });
-
 app.delete('/members/:name', async (req, res) => {
   const { name } = req.params;
   try {
@@ -434,9 +403,7 @@ app.delete('/members/:name', async (req, res) => {
     res.status(500).json({ error: 'Failed to remove member' });
   }
 });
-
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server on port ${PORT}`));
-
 // Vercel serverless export (required for /api/* routing)
 module.exports = app;
