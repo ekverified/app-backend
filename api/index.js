@@ -2,25 +2,36 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const { GoogleSpreadsheet } = require('google-spreadsheet');
+const { JWT } = require('google-auth-library'); // Add this import for v4+ auth
 const jwt = require('jsonwebtoken');
 const CryptoJS = require('crypto-js');
+
 const app = express();
 app.use(cors());
 app.use(express.json());
+
 const SHEET_ID = '1Hai7HwRk6moq-55LASLrXl8ot8VYwRKgBurJowPm9Ws'; // Matches your Google Sheet
 const JWT_SECRET = process.env.JWT_SECRET || 'supersecret_change_in_prod';
+
 // Load service account from env var (stringified JSON)
 const serviceAccount = JSON.parse(process.env.SHEETS_KEY_JSON || '{}');
 // Optional: Log if auth is missing (for Vercel logs)
 if (Object.keys(serviceAccount).length === 0) {
   console.error('WARNING: Missing SHEETS_KEY_JSON env var - Google Sheets auth will fail');
 }
+
 // Init doc globally, but don't throw on startup - handle per-route
 let doc;
 async function initSheets() {
   try {
-    doc = new GoogleSpreadsheet(SHEET_ID);
-    await doc.useServiceAccountAuth(serviceAccount);
+    // Create JWT auth for v4+ (replaces useServiceAccountAuth)
+    const serviceAccountAuth = new JWT({
+      email: serviceAccount.client_email,
+      key: serviceAccount.private_key?.replace(/\\n/g, '\n'), // Handle escaped newlines if needed
+      scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+    });
+
+    doc = new GoogleSpreadsheet(SHEET_ID, serviceAccountAuth);
     await doc.loadInfo(); // Test auth early
     console.log('Google Sheets connected successfully');
   } catch (error) {
@@ -30,6 +41,7 @@ async function initSheets() {
 }
 // Call init on startup (non-blocking)
 initSheets().catch(err => console.error('Startup Sheets init error:', err));
+
 // Auth (PIN login from Members tab)
 app.post('/auth', async (req, res) => {
   const { pin } = req.body;
@@ -51,6 +63,7 @@ app.post('/auth', async (req, res) => {
     res.status(500).json({ error: 'Auth failed - check Sheets access' });
   }
 });
+
 // News (dashboard comms)
 app.get('/news', async (req, res) => {
   try {
@@ -77,6 +90,7 @@ app.post('/news', async (req, res) => {
     res.status(500).json({ error: 'Failed to post news' });
   }
 });
+
 // Welfare (claims)
 app.get('/welfare', async (req, res) => {
   const { member } = req.query;
@@ -105,6 +119,7 @@ app.post('/welfare', async (req, res) => {
     res.status(500).json({ error: 'Failed to submit welfare' });
   }
 });
+
 // Polls (elections)
 app.get('/polls', async (req, res) => {
   try {
@@ -145,6 +160,7 @@ app.post('/polls', async (req, res) => {
     res.status(500).json({ error: 'Failed to create poll' });
   }
 });
+
 // Transactions
 app.get('/transactions', async (req, res) => {
   const { member } = req.query;
@@ -173,6 +189,7 @@ app.post('/transactions', async (req, res) => {
     res.status(500).json({ error: 'Failed to add transaction' });
   }
 });
+
 // Approved Reports
 app.get('/approved-reports', async (req, res) => {
   try {
@@ -199,6 +216,7 @@ app.post('/approved-reports', async (req, res) => {
     res.status(500).json({ error: 'Failed to add report' });
   }
 });
+
 // Chair Queue
 app.get('/chair-queue', async (req, res) => {
   try {
@@ -240,6 +258,7 @@ app.delete('/chair-queue/:rowIndex', async (req, res) => {
     res.status(500).json({ error: 'Failed to approve' });
   }
 });
+
 // Logs
 app.get('/logs', async (req, res) => {
   try {
@@ -266,6 +285,7 @@ app.post('/logs', async (req, res) => {
     res.status(500).json({ error: 'Failed to log' });
   }
 });
+
 // Notifications
 app.get('/notifications', async (req, res) => {
   const { member } = req.query;
@@ -310,6 +330,7 @@ app.patch('/notifications/:rowIndex/read', async (req, res) => {
     res.status(500).json({ error: 'Failed to mark read' });
   }
 });
+
 // Loans
 app.get('/loans', async (req, res) => {
   const { member } = req.query;
@@ -338,6 +359,7 @@ app.post('/loans', async (req, res) => {
     res.status(500).json({ error: 'Failed to submit loan' });
   }
 });
+
 // Signatures
 app.get('/signatures', async (req, res) => {
   try {
@@ -372,6 +394,7 @@ app.patch('/signatures/:role', async (req, res) => {
     res.status(500).json({ error: 'Failed to update signature' });
   }
 });
+
 // Members (admin add/remove)
 app.post('/members', async (req, res) => {
   const { name, email, pin } = req.body;
@@ -403,7 +426,13 @@ app.delete('/members/:name', async (req, res) => {
     res.status(500).json({ error: 'Failed to remove member' });
   }
 });
+
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server on port ${PORT}`));
-// Vercel serverless export (required for /api/* routing)
-module.exports = app;
+if (typeof serverless !== 'undefined') {
+  // Optional: If using serverless-http for better compatibility
+  const serverless = require('serverless-http');
+  module.exports.handler = serverless(app);
+} else {
+  app.listen(PORT, () => console.log(`Server on port ${PORT}`));
+  module.exports = app; // For Vercel API route
+}
