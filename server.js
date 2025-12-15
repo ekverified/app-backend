@@ -5,14 +5,11 @@ const fs = require('fs').promises;
 const path = require('path');
 const jwt = require('jsonwebtoken');
 const CryptoJS = require('crypto-js');
-
 const app = express();
 app.use(cors());
 app.use(express.json());
-
 const DATA_DIR = path.join(__dirname, 'data');
 const JWT_SECRET = process.env.JWT_SECRET || 'supersecret_change_in_prod';
-
 // Ensure data dir exists and init default data
 async function ensureDataDir() {
   try {
@@ -38,12 +35,12 @@ async function ensureDataDir() {
           {
             name: 'Felix',
             email: 'felix@example.com',
-            hashedPin: CryptoJS.SHA256('1234').toString()  // 03ac674216f3e15c761ee1a5e255f067953623c8b388b4459e13f978d7c846f4
+            hashedPin: CryptoJS.SHA256('1234').toString() // 03ac674216f3e15c761ee1a5e255f067953623c8b388b4459e13f978d7c846f4
           },
           {
             name: 'enoch thumbi',
             email: 'thumbikamauenoch0@gmail.com',
-            hashedPin: CryptoJS.SHA256('3333').toString()  // 318aee3fed8c9d040d35a7fc1fa776fb31303833aa2de885354ddf3d44d8fb69
+            hashedPin: CryptoJS.SHA256('3333').toString() // 318aee3fed8c9d040d35a7fc1fa776fb31303833aa2de885354ddf3d44d8fb69
           }
         ];
         await fs.writeFile(membersPath, JSON.stringify(defaults, null, 2));
@@ -75,12 +72,10 @@ async function ensureDataDir() {
   }
 }
 ensureDataDir();
-
 // Helper: Get collection file path
 function getCollectionPath(collectionName) {
   return path.join(DATA_DIR, `${collectionName}.json`);
 }
-
 // Helper: Read JSON array (creates empty if missing)
 async function readCollection(collectionName) {
   const filePath = getCollectionPath(collectionName);
@@ -93,7 +88,6 @@ async function readCollection(collectionName) {
     return [];
   }
 }
-
 // Helper: Write JSON array
 async function writeCollection(collectionName, data) {
   const filePath = getCollectionPath(collectionName);
@@ -104,7 +98,6 @@ async function writeCollection(collectionName, data) {
     throw error;
   }
 }
-
 // Middleware: JWT Auth (for admin routes)
 const authMiddleware = (req, res, next) => {
   const token = req.headers.authorization?.split(' ')[1];
@@ -116,26 +109,26 @@ const authMiddleware = (req, res, next) => {
     res.status(401).json({ error: 'Invalid token' });
   }
 };
-
-// Auth (from members.json)
+// Auth (updated to support email + PIN)
 app.post('/auth', async (req, res) => {
-  const { pin } = req.body;
+  const { email, pin } = req.body;
+  if (!email || !pin) return res.status(400).json({ error: 'Email and PIN required' });
   try {
     const members = await readCollection('members');
+    const member = members.find(m => m.email === email);
+    if (!member) return res.status(401).json({ error: 'Invalid Email or PIN' });
     const hashedPin = CryptoJS.SHA256(pin).toString();
-    const member = members.find(m => m.hashedPin === hashedPin);
-    if (member) {
+    if (member.hashedPin === hashedPin) {
       const token = jwt.sign({ name: member.name, email: member.email }, JWT_SECRET);
       res.json({ user: { name: member.name, email: member.email }, token });
     } else {
-      res.status(401).json({ error: 'Invalid PIN' });
+      res.status(401).json({ error: 'Invalid Email or PIN' });
     }
   } catch (error) {
     console.error('Auth error:', error);
     res.status(500).json({ error: 'Auth failed' });
   }
 });
-
 // News
 app.get('/news', async (req, res) => {
   try {
@@ -156,7 +149,6 @@ app.post('/news', authMiddleware, async (req, res) => {
     res.status(500).json({ error: 'Failed to post news' });
   }
 });
-
 // Welfare
 app.get('/welfare', async (req, res) => {
   const { member } = req.query;
@@ -179,7 +171,6 @@ app.post('/welfare', async (req, res) => {
     res.status(500).json({ error: 'Failed to submit welfare' });
   }
 });
-
 // Polls
 app.get('/polls', async (req, res) => {
   try {
@@ -201,7 +192,7 @@ app.post('/polls', authMiddleware, async (req, res) => {
   try {
     const polls = await readCollection('polls');
     const newPoll = {
-      id: Date.now(),  // Use timestamp for unique ID
+      id: Date.now(), // Use timestamp for unique ID
       question,
       options,
       votes: new Array(options.length).fill(0),
@@ -216,7 +207,6 @@ app.post('/polls', authMiddleware, async (req, res) => {
     res.status(500).json({ error: 'Failed to create poll' });
   }
 });
-
 // Transactions
 app.get('/transactions', async (req, res) => {
   const { member } = req.query;
@@ -239,7 +229,6 @@ app.post('/transactions', authMiddleware, async (req, res) => {
     res.status(500).json({ error: 'Failed to add transaction' });
   }
 });
-
 // Approved Reports
 app.get('/approved-reports', async (req, res) => {
   try {
@@ -260,7 +249,6 @@ app.post('/approved-reports', authMiddleware, async (req, res) => {
     res.status(500).json({ error: 'Failed to add report' });
   }
 });
-
 // Chair Queue
 app.get('/chair-queue', async (req, res) => {
   try {
@@ -293,7 +281,6 @@ app.delete('/chair-queue/:id', authMiddleware, async (req, res) => {
     res.status(500).json({ error: 'Failed to approve' });
   }
 });
-
 // Logs
 app.get('/logs', async (req, res) => {
   try {
@@ -314,7 +301,6 @@ app.post('/logs', authMiddleware, async (req, res) => {
     res.status(500).json({ error: 'Failed to log' });
   }
 });
-
 // Notifications
 app.get('/notifications', async (req, res) => {
   const { member } = req.query;
@@ -350,7 +336,6 @@ app.patch('/notifications/:id/read', authMiddleware, async (req, res) => {
     res.status(500).json({ error: 'Failed to mark read' });
   }
 });
-
 // Loans
 app.get('/loans', async (req, res) => {
   const { member } = req.query;
@@ -373,7 +358,6 @@ app.post('/loans', async (req, res) => {
     res.status(500).json({ error: 'Failed to submit loan' });
   }
 });
-
 // Signatures
 app.get('/signatures', async (req, res) => {
   try {
@@ -401,7 +385,6 @@ app.patch('/signatures/:role', authMiddleware, async (req, res) => {
     res.status(500).json({ error: 'Failed to update signature' });
   }
 });
-
 // Members (Public POST for registration, protected GET/DELETE for admin)
 app.get('/members', authMiddleware, async (req, res) => {
   try {
@@ -412,7 +395,7 @@ app.get('/members', authMiddleware, async (req, res) => {
     res.status(500).json({ error: 'Failed to fetch members' });
   }
 });
-app.post('/members', async (req, res) => {  // No auth - public registration
+app.post('/members', async (req, res) => { // No auth - public registration
   const { name, email, pin } = req.body;
   try {
     const members = await readCollection('members');
@@ -423,7 +406,7 @@ app.post('/members', async (req, res) => {  // No auth - public registration
     const hashedPin = CryptoJS.SHA256(pin).toString();
     members.push({ name, email, hashedPin });
     await writeCollection('members', members);
-    console.log(`New member registered: ${name} (${email})`);  // Log for debugging
+    console.log(`New member registered: ${name} (${email})`); // Log for debugging
     res.status(201).json({ success: true });
   } catch (error) {
     console.error('Register error:', error);
@@ -441,6 +424,5 @@ app.delete('/members/:name', authMiddleware, async (req, res) => {
     res.status(500).json({ error: 'Failed to remove member' });
   }
 });
-
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
