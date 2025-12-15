@@ -13,10 +13,63 @@ app.use(express.json());
 const DATA_DIR = path.join(__dirname, 'data');
 const JWT_SECRET = process.env.JWT_SECRET || 'supersecret_change_in_prod';
 
-// Ensure data dir exists
+// Ensure data dir exists and init default data
 async function ensureDataDir() {
   try {
     await fs.mkdir(DATA_DIR, { recursive: true });
+    // Init empty collections if missing
+    const collections = ['news', 'welfare', 'polls', 'transactions', 'approvedreports', 'chairqueue', 'logs', 'notifications', 'loans', 'signatures'];
+    for (const coll of collections) {
+      const filePath = path.join(DATA_DIR, `${coll}.json`);
+      try {
+        await fs.access(filePath);
+      } catch {
+        await fs.writeFile(filePath, JSON.stringify([], null, 2));
+        console.log(`Initialized empty ${coll}.json`);
+      }
+    }
+    // Special init for members: Create defaults with hashed PINs if empty
+    const membersPath = path.join(DATA_DIR, 'members.json');
+    try {
+      const membersData = await fs.readFile(membersPath, 'utf8');
+      const members = JSON.parse(membersData);
+      if (members.length === 0) {
+        const defaults = [
+          {
+            name: 'Felix',
+            email: 'felix@example.com',
+            hashedPin: CryptoJS.SHA256('1234').toString()  // 03ac674216f3e15c761ee1a5e255f067953623c8b388b4459e13f978d7c846f4
+          },
+          {
+            name: 'enoch thumbi',
+            email: 'thumbikamauenoch0@gmail.com',
+            hashedPin: CryptoJS.SHA256('3333').toString()  // 318aee3fed8c9d040d35a7fc1fa776fb31303833aa2de885354ddf3d44d8fb69
+          }
+        ];
+        await fs.writeFile(membersPath, JSON.stringify(defaults, null, 2));
+        console.log('Initialized default members with hashed PINs');
+      }
+    } catch (error) {
+      if (error.code === 'ENOENT') {
+        // Create with defaults if fully missing
+        const defaults = [
+          {
+            name: 'Felix',
+            email: 'felix@example.com',
+            hashedPin: CryptoJS.SHA256('1234').toString()
+          },
+          {
+            name: 'enoch thumbi',
+            email: 'thumbikamauenoch0@gmail.com',
+            hashedPin: CryptoJS.SHA256('3333').toString()
+          }
+        ];
+        await fs.writeFile(membersPath, JSON.stringify(defaults, null, 2));
+        console.log('Created members.json with default hashed users');
+      } else {
+        console.error('Members init error:', error);
+      }
+    }
   } catch (error) {
     console.error('Data dir error:', error);
   }
@@ -148,7 +201,7 @@ app.post('/polls', authMiddleware, async (req, res) => {
   try {
     const polls = await readCollection('polls');
     const newPoll = {
-      id: polls.length,
+      id: Date.now(),  // Use timestamp for unique ID
       question,
       options,
       votes: new Array(options.length).fill(0),
@@ -212,7 +265,7 @@ app.post('/approved-reports', authMiddleware, async (req, res) => {
 app.get('/chair-queue', async (req, res) => {
   try {
     const queue = await readCollection('chairqueue');
-    res.json(queue.map(row => ({ type: row.type, data: row.data || {}, author: row.author })));
+    res.json(queue.map(row => ({ id: row.id, type: row.type, data: row.data || {}, author: row.author })));
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch queue' });
   }
@@ -221,7 +274,8 @@ app.post('/chair-queue', authMiddleware, async (req, res) => {
   const { type, data, author } = req.body;
   try {
     const queue = await readCollection('chairqueue');
-    queue.push({ type, data, author });
+    const newItem = { id: Date.now().toString(), type, data, author, createdAt: new Date().toLocaleString() };
+    queue.push(newItem);
     await writeCollection('chairqueue', queue);
     res.status(201).json({ success: true });
   } catch (error) {
@@ -232,7 +286,7 @@ app.delete('/chair-queue/:id', authMiddleware, async (req, res) => {
   const { id } = req.params;
   try {
     const queue = await readCollection('chairqueue');
-    const newQueue = queue.filter((_, index) => index.toString() !== id);
+    const newQueue = queue.filter(row => row.id !== id);
     await writeCollection('chairqueue', newQueue);
     res.json({ success: true });
   } catch (error) {
@@ -348,7 +402,7 @@ app.patch('/signatures/:role', authMiddleware, async (req, res) => {
   }
 });
 
-// Members
+// Members (Public POST for registration, protected GET/DELETE for admin)
 app.get('/members', authMiddleware, async (req, res) => {
   try {
     const members = await readCollection('members');
@@ -358,15 +412,21 @@ app.get('/members', authMiddleware, async (req, res) => {
     res.status(500).json({ error: 'Failed to fetch members' });
   }
 });
-app.post('/members', authMiddleware, async (req, res) => {
+app.post('/members', async (req, res) => {  // No auth - public registration
   const { name, email, pin } = req.body;
   try {
     const members = await readCollection('members');
+    // Check for duplicate email/name
+    if (members.find(m => m.email === email || m.name === name)) {
+      return res.status(409).json({ error: 'User already exists' });
+    }
     const hashedPin = CryptoJS.SHA256(pin).toString();
     members.push({ name, email, hashedPin });
     await writeCollection('members', members);
+    console.log(`New member registered: ${name} (${email})`);  // Log for debugging
     res.status(201).json({ success: true });
   } catch (error) {
+    console.error('Register error:', error);
     res.status(500).json({ error: 'Failed to add member' });
   }
 });
