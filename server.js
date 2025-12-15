@@ -10,6 +10,8 @@ app.use(cors());
 app.use(express.json());
 const DATA_DIR = path.join(__dirname, 'data');
 const JWT_SECRET = process.env.JWT_SECRET || 'supersecret_change_in_prod';
+const JWT_EXPIRY = '1h'; // Enhancement: Token expires in 1 hour
+
 // Ensure data dir exists and init default data
 async function ensureDataDir() {
   try {
@@ -25,7 +27,7 @@ async function ensureDataDir() {
         console.log(`Initialized empty ${coll}.json`);
       }
     }
-    // Special init for members: Create defaults with hashed PINs if empty
+    // Special init for members: Create defaults with hashed PINs and roles if empty
     const membersPath = path.join(DATA_DIR, 'members.json');
     try {
       const membersData = await fs.readFile(membersPath, 'utf8');
@@ -35,16 +37,25 @@ async function ensureDataDir() {
           {
             name: 'Felix',
             email: 'felix@example.com',
-            hashedPin: CryptoJS.SHA256('1234').toString() // 03ac674216f3e15c761ee1a5e255f067953623c8b388b4459e13f978d7c846f4
+            hashedPin: CryptoJS.SHA256('1234').toString(),
+            role: 'member'
           },
           {
             name: 'enoch thumbi',
             email: 'thumbikamauenoch0@gmail.com',
-            hashedPin: CryptoJS.SHA256('3333').toString() // 318aee3fed8c9d040d35a7fc1fa776fb31303833aa2de885354ddf3d44d8fb69
+            hashedPin: CryptoJS.SHA256('3333').toString(),
+            role: 'chairperson'  // Admin for testing
           }
         ];
         await fs.writeFile(membersPath, JSON.stringify(defaults, null, 2));
-        console.log('Initialized default members with hashed PINs');
+        console.log('Initialized default members with hashed PINs and roles');
+      } else {
+        // Ensure all members have role if missing
+        const updated = members.map(m => ({ ...m, role: m.role || 'member' }));
+        if (JSON.stringify(members) !== JSON.stringify(updated)) {
+          await fs.writeFile(membersPath, JSON.stringify(updated, null, 2));
+          console.log('Added roles to existing members');
+        }
       }
     } catch (error) {
       if (error.code === 'ENOENT') {
@@ -53,29 +64,44 @@ async function ensureDataDir() {
           {
             name: 'Felix',
             email: 'felix@example.com',
-            hashedPin: CryptoJS.SHA256('1234').toString()
+            hashedPin: CryptoJS.SHA256('1234').toString(),
+            role: 'member'
           },
           {
             name: 'enoch thumbi',
             email: 'thumbikamauenoch0@gmail.com',
-            hashedPin: CryptoJS.SHA256('3333').toString()
+            hashedPin: CryptoJS.SHA256('3333').toString(),
+            role: 'chairperson'
           }
         ];
         await fs.writeFile(membersPath, JSON.stringify(defaults, null, 2));
-        console.log('Created members.json with default hashed users');
+        console.log('Created members.json with default hashed users and roles');
       } else {
         console.error('Members init error:', error);
       }
+    }
+    // Enhancement: Add sample data if empty for testing
+    if ((await readCollection('news')).length === 0) {
+      const sampleNews = [{ text: 'Welcome to Insightful Eight Ltd!', signedBy: 'Chairperson', createdAt: new Date().toLocaleString() }];
+      await writeCollection('news', sampleNews);
+      console.log('Added sample news');
+    }
+    if ((await readCollection('transactions')).length === 0) {
+      const sampleTrans = [{ title: 'Monthly Contribution', date: new Date().toLocaleDateString(), amount: 5000, type: 'in', member: 'Felix' }];
+      await writeCollection('transactions', sampleTrans);
+      console.log('Added sample transaction');
     }
   } catch (error) {
     console.error('Data dir error:', error);
   }
 }
 ensureDataDir();
+
 // Helper: Get collection file path
 function getCollectionPath(collectionName) {
   return path.join(DATA_DIR, `${collectionName}.json`);
 }
+
 // Helper: Read JSON array (creates empty if missing)
 async function readCollection(collectionName) {
   const filePath = getCollectionPath(collectionName);
@@ -88,6 +114,7 @@ async function readCollection(collectionName) {
     return [];
   }
 }
+
 // Helper: Write JSON array
 async function writeCollection(collectionName, data) {
   const filePath = getCollectionPath(collectionName);
@@ -98,18 +125,24 @@ async function writeCollection(collectionName, data) {
     throw error;
   }
 }
+
 // Middleware: JWT Auth (for admin routes)
 const authMiddleware = (req, res, next) => {
   const token = req.headers.authorization?.split(' ')[1];
-  if (!token) return res.status(401).json({ error: 'No token' });
+  if (!token) return res.status(401).json({ error: 'No token provided' });
   try {
     req.user = jwt.verify(token, JWT_SECRET);
+    // Check if admin for protected routes (enhancement: explicit roles)
+    if (req.user.role && !['secretary', 'treasurer', 'chairperson', 'supervisorycommittee', 'committeemember'].includes(req.user.role)) {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
     next();
   } catch (error) {
-    res.status(401).json({ error: 'Invalid token' });
+    res.status(401).json({ error: 'Invalid or expired token' });
   }
 };
-// Auth (updated to support email + PIN)
+
+// Auth (updated to support email + PIN, include role in token)
 app.post('/auth', async (req, res) => {
   const { email, pin } = req.body;
   if (!email || !pin) return res.status(400).json({ error: 'Email and PIN required' });
@@ -119,27 +152,144 @@ app.post('/auth', async (req, res) => {
     if (!member) return res.status(401).json({ error: 'Invalid Email or PIN' });
     const hashedPin = CryptoJS.SHA256(pin).toString();
     if (member.hashedPin === hashedPin) {
-      const token = jwt.sign({ name: member.name, email: member.email }, JWT_SECRET);
-      res.json({ user: { name: member.name, email: member.email }, token });
+      const token = jwt.sign({ name: member.name, email: member.email, role: member.role }, JWT_SECRET, { expiresIn: JWT_EXPIRY });
+      res.json({ user: { name: member.name, email: member.email, role: member.role }, token });
     } else {
       res.status(401).json({ error: 'Invalid Email or PIN' });
     }
   } catch (error) {
     console.error('Auth error:', error);
-    res.status(500).json({ error: 'Auth failed' });
+    res.status(500).json({ error: 'Authentication failed' });
   }
 });
+
+// PIN Reset (public, demo: sets to '1234' and logs; prod: email new PIN)
+app.post('/reset-pin', async (req, res) => {
+  const { email } = req.body;
+  if (!email) return res.status(400).json({ error: 'Email required' });
+  try {
+    const members = await readCollection('members');
+    const member = members.find(m => m.email === email);
+    if (!member) return res.status(404).json({ error: 'Member not found' });
+    const newPin = '1234';
+    const hashedPin = CryptoJS.SHA256(newPin).toString();
+    member.hashedPin = hashedPin;
+    await writeCollection('members', members);
+    console.log(`PIN reset for ${email} to ${newPin} (prod: send email)`); // Enhancement: Prod note
+    res.json({ success: true, message: 'PIN reset to 1234. Check console or contact admin for secure delivery.' });
+  } catch (error) {
+    console.error('Reset PIN error:', error);
+    res.status(500).json({ error: 'Reset failed' });
+  }
+});
+
+// Members (Public POST for registration, protected GET/PUT/DELETE/PROMOTE for admin/own)
+app.get('/members', authMiddleware, async (req, res) => {
+  try {
+    const members = await readCollection('members');
+    const { role } = req.query;
+    const filtered = role ? members.filter(m => m.role === role) : members;
+    res.json(filtered.map(m => ({ name: m.name, email: m.email, role: m.role }))); // Hide hashedPin
+  } catch (error) {
+    console.error('Members fetch error:', error);
+    res.status(500).json({ error: 'Failed to fetch members' });
+  }
+});
+
+app.post('/members', async (req, res) => { // No auth - public registration
+  const { name, email, pin } = req.body;
+  // Enhancement: Basic validation
+  if (!name || !email || !pin || pin.length !== 4 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return res.status(400).json({ error: 'Invalid input: Name, valid email, and 4-digit PIN required' });
+  }
+  try {
+    const members = await readCollection('members');
+    // Check for duplicate email/name
+    if (members.find(m => m.email === email || m.name === name)) {
+      return res.status(409).json({ error: 'User already exists' });
+    }
+    const hashedPin = CryptoJS.SHA256(pin).toString();
+    members.push({ name, email, hashedPin, role: 'member' });
+    await writeCollection('members', members);
+    console.log(`New member registered: ${name} (${email})`);
+    res.status(201).json({ success: true });
+  } catch (error) {
+    console.error('Register error:', error);
+    res.status(500).json({ error: 'Failed to add member' });
+  }
+});
+
+app.put('/members/:email', authMiddleware, async (req, res) => {
+  const { email: targetEmail } = req.params;
+  const { name, newPin } = req.body;
+  // Enhancement: Self or chair only
+  if (req.user.email !== targetEmail && req.user.role !== 'chairperson') {
+    return res.status(403).json({ error: 'Can only update own profile or as chair' });
+  }
+  // Validation
+  if (name && (!name.trim() || name.length < 2)) return res.status(400).json({ error: 'Valid name required' });
+  if (newPin && newPin.length !== 4) return res.status(400).json({ error: 'PIN must be 4 digits' });
+  try {
+    const members = await readCollection('members');
+    const memberIndex = members.findIndex(m => m.email === targetEmail);
+    if (memberIndex === -1) return res.status(404).json({ error: 'Member not found' });
+    if (name) members[memberIndex].name = name.trim();
+    if (newPin) members[memberIndex].hashedPin = CryptoJS.SHA256(newPin).toString();
+    await writeCollection('members', members);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Update member error:', error);
+    res.status(500).json({ error: 'Update failed' });
+  }
+});
+
+app.post('/members/:email/promote', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'chairperson') {
+    return res.status(403).json({ error: 'Chair only' });
+  }
+  const { email: targetEmail } = req.params;
+  const { role } = req.body; // e.g., 'secretary'
+  if (!['secretary', 'treasurer', 'chairperson', 'supervisorycommittee', 'committeemember'].includes(role)) {
+    return res.status(400).json({ error: 'Invalid role' });
+  }
+  try {
+    const members = await readCollection('members');
+    const memberIndex = members.findIndex(m => m.email === targetEmail);
+    if (memberIndex === -1) return res.status(404).json({ error: 'Member not found' });
+    members[memberIndex].role = role;
+    await writeCollection('members', members);
+    console.log(`Promoted ${targetEmail} to ${role}`);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Promote error:', error);
+    res.status(500).json({ error: 'Promotion failed' });
+  }
+});
+
+app.delete('/members/:name', authMiddleware, async (req, res) => {
+  const { name } = req.params;
+  try {
+    const members = await readCollection('members');
+    const newMembers = members.filter(m => m.name !== name);
+    await writeCollection('members', newMembers);
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to remove member' });
+  }
+});
+
 // News
 app.get('/news', async (req, res) => {
   try {
     const news = await readCollection('news');
-    res.json(news.map(row => ({ text: row.text, signedBy: row.signedBy })));
+    res.json(news.map(row => ({ text: row.text, signedBy: row.signedBy, createdAt: row.createdAt }))); // Enhancement: Include date
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch news' });
   }
 });
 app.post('/news', authMiddleware, async (req, res) => {
   const { text, signed_by } = req.body;
+  if (!text || !signed_by) return res.status(400).json({ error: 'Text and signer required' });
   try {
     const news = await readCollection('news');
     news.unshift({ text, signedBy: signed_by, createdAt: new Date().toLocaleString() });
@@ -149,6 +299,7 @@ app.post('/news', authMiddleware, async (req, res) => {
     res.status(500).json({ error: 'Failed to post news' });
   }
 });
+
 // Welfare
 app.get('/welfare', async (req, res) => {
   const { member } = req.query;
@@ -162,15 +313,17 @@ app.get('/welfare', async (req, res) => {
 });
 app.post('/welfare', async (req, res) => {
   const { type, amount, member } = req.body;
+  if (!type || !amount || amount <= 0 || !member) return res.status(400).json({ error: 'Valid type, positive amount, and member required' }); // Enhancement: Validation
   try {
     const welfare = await readCollection('welfare');
-    welfare.push({ type, amount, member, status: 'Sec', date: new Date().toLocaleDateString() });
+    welfare.push({ type, amount: parseInt(amount), member, status: 'Sec', date: new Date().toLocaleDateString() });
     await writeCollection('welfare', welfare);
     res.status(201).json({ success: true });
   } catch (error) {
     res.status(500).json({ error: 'Failed to submit welfare' });
   }
 });
+
 // Polls
 app.get('/polls', async (req, res) => {
   try {
@@ -189,10 +342,11 @@ app.get('/polls', async (req, res) => {
 });
 app.post('/polls', authMiddleware, async (req, res) => {
   const { question, options } = req.body;
+  if (!question || !options || options.length < 2) return res.status(400).json({ error: 'Question and at least 2 options required' });
   try {
     const polls = await readCollection('polls');
     const newPoll = {
-      id: Date.now(), // Use timestamp for unique ID
+      id: Date.now(),
       question,
       options,
       votes: new Array(options.length).fill(0),
@@ -207,6 +361,7 @@ app.post('/polls', authMiddleware, async (req, res) => {
     res.status(500).json({ error: 'Failed to create poll' });
   }
 });
+
 // Transactions
 app.get('/transactions', async (req, res) => {
   const { member } = req.query;
@@ -220,15 +375,17 @@ app.get('/transactions', async (req, res) => {
 });
 app.post('/transactions', authMiddleware, async (req, res) => {
   const { title, date, amount, type, member } = req.body;
+  if (!title || !date || amount <= 0 || !['in', 'out'].includes(type) || !member) return res.status(400).json({ error: 'Valid title, date, positive amount, type (in/out), and member required' });
   try {
     const transactions = await readCollection('transactions');
-    transactions.push({ title, date, amount, type, member });
+    transactions.push({ title, date, amount: parseInt(amount), type, member });
     await writeCollection('transactions', transactions);
     res.status(201).json({ success: true });
   } catch (error) {
     res.status(500).json({ error: 'Failed to add transaction' });
   }
 });
+
 // Approved Reports
 app.get('/approved-reports', async (req, res) => {
   try {
@@ -240,6 +397,7 @@ app.get('/approved-reports', async (req, res) => {
 });
 app.post('/approved-reports', authMiddleware, async (req, res) => {
   const { text, file, signed_by } = req.body;
+  if (!text || !signed_by) return res.status(400).json({ error: 'Text and signer required' });
   try {
     const reports = await readCollection('approvedreports');
     reports.push({ text, file, signedBy: signed_by });
@@ -249,6 +407,7 @@ app.post('/approved-reports', authMiddleware, async (req, res) => {
     res.status(500).json({ error: 'Failed to add report' });
   }
 });
+
 // Chair Queue
 app.get('/chair-queue', async (req, res) => {
   try {
@@ -260,6 +419,7 @@ app.get('/chair-queue', async (req, res) => {
 });
 app.post('/chair-queue', authMiddleware, async (req, res) => {
   const { type, data, author } = req.body;
+  if (!type || !data || !author) return res.status(400).json({ error: 'Type, data, and author required' });
   try {
     const queue = await readCollection('chairqueue');
     const newItem = { id: Date.now().toString(), type, data, author, createdAt: new Date().toLocaleString() };
@@ -281,6 +441,7 @@ app.delete('/chair-queue/:id', authMiddleware, async (req, res) => {
     res.status(500).json({ error: 'Failed to approve' });
   }
 });
+
 // Logs
 app.get('/logs', async (req, res) => {
   try {
@@ -292,6 +453,7 @@ app.get('/logs', async (req, res) => {
 });
 app.post('/logs', authMiddleware, async (req, res) => {
   const { action, by, details } = req.body;
+  if (!action || !by) return res.status(400).json({ error: 'Action and by required' });
   try {
     const logs = await readCollection('logs');
     logs.push({ action, by, details, timestamp: new Date().toLocaleString() });
@@ -301,6 +463,7 @@ app.post('/logs', authMiddleware, async (req, res) => {
     res.status(500).json({ error: 'Failed to log' });
   }
 });
+
 // Notifications
 app.get('/notifications', async (req, res) => {
   const { member } = req.query;
@@ -314,6 +477,7 @@ app.get('/notifications', async (req, res) => {
 });
 app.post('/notifications', authMiddleware, async (req, res) => {
   const { message, member } = req.body;
+  if (!message) return res.status(400).json({ error: 'Message required' });
   try {
     const notifs = await readCollection('notifications');
     notifs.push({ message, member, read: false });
@@ -336,6 +500,7 @@ app.patch('/notifications/:id/read', authMiddleware, async (req, res) => {
     res.status(500).json({ error: 'Failed to mark read' });
   }
 });
+
 // Loans
 app.get('/loans', async (req, res) => {
   const { member } = req.query;
@@ -349,15 +514,17 @@ app.get('/loans', async (req, res) => {
 });
 app.post('/loans', async (req, res) => {
   const { amount, purpose, member } = req.body;
+  if (!amount || amount <= 0 || !purpose || !member) return res.status(400).json({ error: 'Positive amount, purpose, and member required' });
   try {
     const loans = await readCollection('loans');
-    loans.push({ amount, purpose, member, status: 'Pending', date: new Date().toLocaleDateString() });
+    loans.push({ amount: parseInt(amount), purpose, member, status: 'Pending', date: new Date().toLocaleDateString() });
     await writeCollection('loans', loans);
     res.status(201).json({ success: true });
   } catch (error) {
     res.status(500).json({ error: 'Failed to submit loan' });
   }
 });
+
 // Signatures
 app.get('/signatures', async (req, res) => {
   try {
@@ -371,6 +538,7 @@ app.get('/signatures', async (req, res) => {
 app.patch('/signatures/:role', authMiddleware, async (req, res) => {
   const { role } = req.params;
   const { signature } = req.body;
+  if (!signature) return res.status(400).json({ error: 'Signature required' });
   try {
     const sigs = await readCollection('signatures');
     const existing = sigs.find(r => r.role === role);
@@ -385,44 +553,11 @@ app.patch('/signatures/:role', authMiddleware, async (req, res) => {
     res.status(500).json({ error: 'Failed to update signature' });
   }
 });
-// Members (Public POST for registration, protected GET/DELETE for admin)
-app.get('/members', authMiddleware, async (req, res) => {
-  try {
-    const members = await readCollection('members');
-    res.json(members.map(m => ({ name: m.name, email: m.email }))); // Hide hashedPin
-  } catch (error) {
-    console.error('Members fetch error:', error);
-    res.status(500).json({ error: 'Failed to fetch members' });
-  }
+
+// Logout (simple token clear; frontend handles redirect)
+app.post('/logout', (req, res) => {
+  res.json({ success: true }); // Client clears token
 });
-app.post('/members', async (req, res) => { // No auth - public registration
-  const { name, email, pin } = req.body;
-  try {
-    const members = await readCollection('members');
-    // Check for duplicate email/name
-    if (members.find(m => m.email === email || m.name === name)) {
-      return res.status(409).json({ error: 'User already exists' });
-    }
-    const hashedPin = CryptoJS.SHA256(pin).toString();
-    members.push({ name, email, hashedPin });
-    await writeCollection('members', members);
-    console.log(`New member registered: ${name} (${email})`); // Log for debugging
-    res.status(201).json({ success: true });
-  } catch (error) {
-    console.error('Register error:', error);
-    res.status(500).json({ error: 'Failed to add member' });
-  }
-});
-app.delete('/members/:name', authMiddleware, async (req, res) => {
-  const { name } = req.params;
-  try {
-    const members = await readCollection('members');
-    const newMembers = members.filter(m => m.name !== name);
-    await writeCollection('members', newMembers);
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to remove member' });
-  }
-});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
