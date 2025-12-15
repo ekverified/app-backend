@@ -349,6 +349,15 @@ app.patch('/signatures/:role', authMiddleware, async (req, res) => {
 });
 
 // Members
+app.get('/members', authMiddleware, async (req, res) => {
+  try {
+    const members = await readCollection('members');
+    res.json(members.map(m => ({ name: m.name, email: m.email }))); // Hide hashedPin
+  } catch (error) {
+    console.error('Members fetch error:', error);
+    res.status(500).json({ error: 'Failed to fetch members' });
+  }
+});
 app.post('/members', authMiddleware, async (req, res) => {
   const { name, email, pin } = req.body;
   try {
