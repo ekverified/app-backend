@@ -16,7 +16,7 @@ app.use(express.static(__dirname));
 // GitHub API setup
 const octokit = new Octokit({ auth: process.env.GITHUB_TOKEN });
 const owner = process.env.GITHUB_OWNER || 'ekverified';
-const repo = process.env.GITHUB_REPO || 'i8-allinone-data';
+const repo = process.env.GITHUB_REPO || 'i8-backend';
 const basePath = ''; // Root
 
 // Utility delay
