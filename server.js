@@ -1,79 +1,119 @@
 require('dotenv').config();
 const express = require('express');
+const { Octokit } = require('@octokit/core');
 const cors = require('cors');
-const { createClient } = require('@supabase/supabase-js');
 const jwt = require('jsonwebtoken');
 const CryptoJS = require('crypto-js');
 const app = express();
-app.use(cors());
-app.use(express.json());
+const port = process.env.PORT || 10000;
 
-const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_ANON_KEY;
-const supabase = createClient(supabaseUrl, supabaseKey);
-const JWT_SECRET = process.env.JWT_SECRET || 'supersecret_change_in_prod';
-const JWT_EXPIRY = '1h';
+// Middleware
+app.use(cors({ origin: 'https://ekverified.github.io' })); // Your frontend
+app.use(express.json({ limit: '10mb' })); // For file uploads
+app.use(express.static(__dirname));
 
-if (!supabaseUrl || !supabaseKey) {
-  console.error('Missing SUPABASE_URL or SUPABASE_ANON_KEY');
+// Auth
+const API_KEY = process.env.API_KEY;
+if (!API_KEY) {
+  console.error('API_KEY is not set');
   process.exit(1);
 }
-console.log('Supabase connected');
 
-// Helper: Supabase op (select/insert/update)
-const runQuery = async (table, op, data = {}, filters = {}) => {
+// GitHub API setup (like your bot)
+const octokit = new Octokit({ auth: process.env.GITHUB_TOKEN });
+const owner = process.env.GITHUB_OWNER || 'ekverified';
+const repo = process.env.GITHUB_REPO || 'i8-allinone-data'; // Your data repo
+const basePath = ''; // Root
+
+// Utility delay
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+// Check token scopes
+async function checkTokenScopes() {
   try {
-    let q = supabase.from(table);
-    if (op === 'select') q = q.select('*');
-    if (op === 'insert') q = q.insert([data]);
-    if (op === 'update') {
-      q = q.update(data);
-      if (filters.id) q = q.eq('id', filters.id);
-      if (filters.email) q = q.eq('email', filters.email);
-    }
-    if (filters.status) q = q.eq('status', filters.status);
-    if (filters.member) q = q.eq('member', filters.member);
-    if (filters.role) q = q.eq('role', filters.role);
-    const { data: result, error } = await q;
-    if (error) throw error;
-    console.log(`${table} ${op}: ${result?.length || 1} rows`); // Debug
-    return result;
+    const response = await octokit.request('GET /rate_limit');
+    const scopes = response.headers['x-oauth-scopes'] || '';
+    console.log('GitHub scopes:', scopes);
+    if (!scopes.includes('repo')) throw new Error('GITHUB_TOKEN lacks "repo" scope');
   } catch (error) {
-    console.error(error);
+    console.error('Token scopes failed:', error.message);
     throw error;
   }
-};
+}
 
-// Init (create tables if missing, add defaults)
-const initDb = async () => {
-  const tables = ['members', 'news', 'welfare', 'polls', 'transactions', 'approvedreports', 'chairqueue', 'logs', 'notifications', 'loans', 'signatures'];
-  for (const table of tables) {
-    const { error } = await supabase.from(table).select('id').limit(1);
-    if (error?.message?.includes('relation')) {
-      // Simple schema via insert (Supabase auto-creates)
-      await supabase.from(table).insert({}); // Triggers create
-      console.log(`Created table: ${table}`);
+// Get JSON file
+async function getData(file) {
+  const maxRetries = 3;
+  let attempt = 1;
+  while (attempt <= maxRetries) {
+    try {
+      const response = await octokit.request('GET /repos/{owner}/{repo}/contents/{path}', { owner, repo, path: file });
+      const content = Buffer.from(response.data.content, 'base64').toString('utf8');
+      const parsedData = JSON.parse(content);
+      console.log(`getData ${file} - Success`);
+      return parsedData;
+    } catch (error) {
+      console.error(`getData ${file} - Attempt ${attempt} failed:`, error.message);
+      if (attempt === maxRetries) throw new Error(`Failed to read ${file}: ${error.message}`);
+      await sleep(1000 * attempt);
+      attempt++;
     }
   }
-  // Defaults if no members
-  const { data: members } = await supabase.from('members').select('id').limit(1);
-  if (!members?.length) {
-    const defaults = [
-      { name: 'Felix', email: 'felix@example.com', hashedPin: CryptoJS.SHA256('1234').toString(), role: 'member' },
-      { name: 'enoch thumbi', email: 'thumbikamauenoch0@gmail.com', hashedPin: CryptoJS.SHA256('3333').toString(), role: 'chairperson' }
-    ];
-    await supabase.from('members').insert(defaults);
-    console.log('Added defaults');
+}
+
+// Save JSON file
+async function saveData(file, data, commitMessage) {
+  try {
+    const response = await octokit.request('GET /repos/{owner}/{repo}/contents/{path}', { owner, repo, path: file });
+    const sha = response.data.sha;
+    const content = JSON.stringify(data, null, 2);
+    await octokit.request('PUT /repos/{owner}/{repo}/contents/{path}', {
+      owner,
+      repo,
+      path: file,
+      message: commitMessage,
+      content: Buffer.from(content).toString('base64'),
+      sha
+    });
+    console.log(`Saved ${file}: ${commitMessage}`);
+  } catch (error) {
+    console.error(`Failed to save ${file}:`, error.message);
+    throw error;
   }
-};
-initDb();
+}
+
+// Init defaults if empty
+async function initData() {
+  await checkTokenScopes();
+  const files = ['Members.json', 'Loans.json', 'News.json', 'Welfare.json', 'Polls.json', 'Transactions.json', 'ChairQueue.json', 'Logs.json', 'Notifications.json', 'AprovedReports.json', 'Docs.json', 'Signatures.json'];
+  for (const file of files) {
+    try {
+      await getData(file);
+    } catch (error) {
+      if (error.message.includes('404')) {
+        const initial = file.includes('Signatures') || file.includes('Docs') ? {} : [];
+        await saveData(file, initial, `Init ${file} for i8 All-In-One App`);
+      }
+    }
+  }
+  // Add defaults to Members
+  const members = await getData('Members.json');
+  if (!members.length) {
+    const defaults = [
+      { id: 1, name: 'Felix', email: 'felix@example.com', hashedpin: CryptoJS.SHA256('1234').toString(), role: 'member' },
+      { id: 2, name: 'enoch thumbi', email: 'thumbikamauenoch0@gmail.com', hashedpin: CryptoJS.SHA256('3333').toString(), role: 'chairperson' }
+    ];
+    await saveData('Members.json', defaults, 'Add defaults for i8 All-In-One App');
+  }
+}
+initData().catch(console.error);
 
 // Auth Middleware
 const authMiddleware = (req, res, next) => {
   const token = req.headers.authorization?.split(' ')[1];
-  if (!token) return res.status(401).json({ error: 'No token provided' });
+  if (!token) return res.status(401).json({ error: 'No token' });
   try {
-    req.user = jwt.verify(token, JWT_SECRET);
+    req.user = jwt.verify(token, process.env.JWT_SECRET || 'supersecret');
     next();
   } catch (error) {
     res.status(401).json({ error: 'Invalid token' });
@@ -85,12 +125,13 @@ app.post('/auth', async (req, res) => {
   const { email, pin } = req.body;
   if (!email || !pin) return res.status(400).json({ error: 'Email and PIN required' });
   try {
-    const { data: members } = await supabase.from('members').select('*').eq('email', email).single();
-    if (!members) return res.status(401).json({ error: 'Invalid Email or PIN' });
+    const members = await getData('Members.json');
+    const member = members.find(m => m.email === email);
+    if (!member) return res.status(401).json({ error: 'Invalid Email or PIN' });
     const hashedPin = CryptoJS.SHA256(pin).toString();
-    if (members.hashedPin === hashedPin) {
-      const token = jwt.sign({ name: members.name, email, role: members.role }, JWT_SECRET, { expiresIn: JWT_EXPIRY });
-      res.json({ user: { name: members.name, email, role: members.role }, token });
+    if (member.hashedpin === hashedPin) {
+      const token = jwt.sign({ name: member.name, email, role: member.role }, process.env.JWT_SECRET || 'supersecret', { expiresIn: '1h' });
+      res.json({ user: { name: member.name, email, role: member.role }, token });
     } else {
       res.status(401).json({ error: 'Invalid Email or PIN' });
     }
@@ -99,34 +140,17 @@ app.post('/auth', async (req, res) => {
   }
 });
 
-// Admin PIN Re-Auth
-app.post('/auth/admin-pin', authMiddleware, async (req, res) => {
-  const { pin } = req.body;
-  const { email } = req.user;
-  try {
-    const { data: members } = await supabase.from('members').select('*').eq('email', email).single();
-    if (!members) return res.status(401).json({ error: 'Member not found' });
-    const hashedPin = CryptoJS.SHA256(pin).toString();
-    if (members.hashedPin === hashedPin && ['secretary', 'treasurer', 'chairperson', 'supervisorycommittee', 'committeemember'].includes(members.role)) {
-      const token = jwt.sign({ name: members.name, email, role: members.role }, JWT_SECRET, { expiresIn: JWT_EXPIRY });
-      res.json({ token });
-    } else {
-      res.status(401).json({ error: 'Invalid PIN or non-admin' });
-    }
-  } catch (error) {
-    res.status(500).json({ error: 'Re-auth failed' });
-  }
-});
-
-// PIN Reset
+// Reset PIN
 app.post('/reset-pin', async (req, res) => {
   const { email } = req.body;
   if (!email) return res.status(400).json({ error: 'Email required' });
   try {
+    const members = await getData('Members.json');
+    const member = members.find(m => m.email === email);
+    if (!member) return res.status(400).json({ error: 'User not found' });
     const newPin = '1234';
-    const hashedPin = CryptoJS.SHA256(newPin).toString();
-    await runQuery('members', 'update', { hashedPin }, { email });
-    console.log(`PIN reset for ${email}`);
+    member.hashedpin = CryptoJS.SHA256(newPin).toString();
+    await saveData('Members.json', members, `Reset PIN for ${email} in i8 All-In-One App`);
     res.json({ success: true, message: 'PIN reset to 1234' });
   } catch (error) {
     res.status(500).json({ error: 'Reset failed' });
@@ -137,9 +161,9 @@ app.post('/reset-pin', async (req, res) => {
 app.get('/members', authMiddleware, async (req, res) => {
   try {
     const { role } = req.query;
-    const filters = role ? { role } : {};
-    const members = await runQuery('members', 'select', {}, filters);
-    res.json(members);
+    const members = await getData('Members.json');
+    const filtered = role ? members.filter(m => m.role === role) : members;
+    res.json(filtered);
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch members' });
   }
@@ -147,44 +171,48 @@ app.get('/members', authMiddleware, async (req, res) => {
 
 app.post('/members', async (req, res) => {
   const { name, email, pin } = req.body;
-  if (!name || !email || !pin || pin.length !== 4 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: 'Invalid input' });
+  if (!name || !email || !pin || pin.length !== 4) return res.status(400).json({ error: 'Invalid input' });
   try {
+    const members = await getData('Members.json');
+    if (members.find(m => m.email === email)) return res.status(409).json({ error: 'User exists' });
     const hashedPin = CryptoJS.SHA256(pin).toString();
-    await runQuery('members', 'insert', { name, email, hashedPin, role: 'member' });
-    console.log(`Registered: ${name} (${email})`);
+    const newMember = { id: members.length + 1, name, email, hashedpin: hashedPin, role: 'member' };
+    members.push(newMember);
+    await saveData('Members.json', members, `Add member ${name} in i8 All-In-One App`);
     res.status(201).json({ success: true });
   } catch (error) {
-    if (error.message.includes('duplicate key')) res.status(409).json({ error: 'User exists' });
-    else res.status(500).json({ error: 'Failed to add member' });
+    res.status(500).json({ error: 'Failed to add member' });
   }
 });
 
-app.put('/members/:email', authMiddleware, async (req, res) => {
+app.put('/members/:email', authMiddleware, (req, res) => {
   const { email: targetEmail } = req.params;
   const { name, newPin } = req.body;
   if (req.user.email !== targetEmail && req.user.role !== 'chairperson') return res.status(403).json({ error: 'Unauthorized' });
-  if (name && (!name.trim() || name.length < 2)) return res.status(400).json({ error: 'Valid name required' });
-  if (newPin && newPin.length !== 4) return res.status(400).json({ error: '4-digit PIN required' });
   try {
-    const updateData = {};
-    if (name) updateData.name = name.trim();
-    if (newPin) updateData.hashedPin = CryptoJS.SHA256(newPin).toString();
-    await runQuery('members', 'update', updateData, { email: targetEmail });
-    console.log(`Updated: ${targetEmail}`);
+    const members = await getData('Members.json');
+    const member = members.find(m => m.email === targetEmail);
+    if (!member) return res.status(404).json({ error: 'User not found' });
+    if (name) member.name = name.trim();
+    if (newPin && newPin.length === 4) member.hashedpin = CryptoJS.SHA256(newPin).toString();
+    await saveData('Members.json', members, `Update member ${targetEmail} in i8 All-In-One App`);
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: 'Update failed' });
   }
 });
 
-app.post('/members/:email/promote', authMiddleware, async (req, res) => {
+app.post('/members/:email/promote', authMiddleware, (req, res) => {
   if (req.user.role !== 'chairperson') return res.status(403).json({ error: 'Chair only' });
   const { email: targetEmail } = req.params;
   const { role } = req.body;
   if (!['secretary', 'treasurer', 'chairperson', 'supervisorycommittee', 'committeemember'].includes(role)) return res.status(400).json({ error: 'Invalid role' });
   try {
-    await runQuery('members', 'update', { role }, { email: targetEmail });
-    console.log(`Promoted ${targetEmail} to ${role}`);
+    const members = await getData('Members.json');
+    const member = members.find(m => m.email === targetEmail);
+    if (!member) return res.status(404).json({ error: 'User not found' });
+    member.role = role;
+    await saveData('Members.json', members, `Promote ${targetEmail} to ${role} in i8 All-In-One App`);
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: 'Promotion failed' });
@@ -192,43 +220,92 @@ app.post('/members/:email/promote', authMiddleware, async (req, res) => {
 });
 
 // News
-app.get('/news', async (req, res) => {
+app.get('/news', (req, res) => {
   try {
-    const news = await runQuery('news', 'select');
+    const news = await getData('News.json');
     res.json(news);
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch news' });
   }
 });
 
-app.post('/news', authMiddleware, async (req, res) => {
+app.post('/news', authMiddleware, (req, res) => {
   const { text, signed_by } = req.body;
   if (!text || !signed_by) return res.status(400).json({ error: 'Text and signed_by required' });
   try {
-    await runQuery('news', 'insert', { text, signedBy: signed_by, createdAt: new Date().toISOString() });
+    const news = await getData('News.json');
+    news.push({ id: news.length + 1, text, signedBy: signed_by, createdAt: new Date().toISOString() });
+    await saveData('News.json', news, `Add news by ${signed_by} in i8 All-In-One App`);
     res.status(201).json({ success: true });
   } catch (error) {
     res.status(500).json({ error: 'Failed to post news' });
   }
 });
 
-// Welfare
-app.get('/welfare', async (req, res) => {
+// Loans
+app.get('/loans', (req, res) => {
   const { member, status } = req.query;
   try {
-    const filters = { ...(member && { member }), ...(status && { status }) };
-    const welfare = await runQuery('welfare', 'select', {}, filters);
-    res.json(welfare);
+    const loans = await getData('Loans.json');
+    let filtered = loans;
+    if (member) filtered = filtered.filter(l => l.member === member);
+    if (status) filtered = filtered.filter(l => l.status === status);
+    res.json(filtered);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch loans' });
+  }
+});
+
+app.post('/loans', (req, res) => {
+  const { amount, purpose, member } = req.body;
+  if (!amount || !purpose || !member) return res.status(400).json({ error: 'Invalid input' });
+  try {
+    const loans = await getData('Loans.json');
+    const id = Date.now();
+    loans.push({ id, amount: parseInt(amount), purpose, member, status: 'Pending', date: new Date().toLocaleDateString() });
+    await saveData('Loans.json', loans, `Add loan for ${member} in i8 All-In-One App`);
+    res.status(201).json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to submit loan' });
+  }
+});
+
+app.patch('/loans/:id', authMiddleware, (req, res) => {
+  const { id } = req.params;
+  const { status } = req.body;
+  if (!['treasurer', 'secretary', 'chairperson'].includes(req.user.role)) return res.status(403).json({ error: 'Unauthorized' });
+  try {
+    const loans = await getData('Loans.json');
+    const loan = loans.find(l => l.id === parseInt(id));
+    if (!loan) return res.status(404).json({ error: 'Loan not found' });
+    loan.status = status;
+    await saveData('Loans.json', loans, `Update loan ${id} status to ${status} in i8 All-In-One App`);
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: 'Update failed' });
+  }
+});
+
+// Welfare
+app.get('/welfare', (req, res) => {
+  const { member } = req.query;
+  try {
+    const welfare = await getData('Welfare.json');
+    let filtered = welfare;
+    if (member) filtered = filtered.filter(w => w.member === member);
+    res.json(filtered);
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch welfare' });
   }
 });
 
-app.post('/welfare', async (req, res) => {
+app.post('/welfare', (req, res) => {
   const { type, amount, member } = req.body;
-  if (!type || !amount || !member) return res.status(400).json({ error: 'Type, amount, member required' });
+  if (!type || !amount || !member) return res.status(400).json({ error: 'Invalid input' });
   try {
-    await runQuery('welfare', 'insert', { type, amount: parseInt(amount), member, date: new Date().toLocaleDateString() });
+    const welfare = await getData('Welfare.json');
+    welfare.push({ id: welfare.length + 1, type, amount: parseInt(amount), member, status: 'Pending', date: new Date().toLocaleDateString() });
+    await saveData('Welfare.json', welfare, `Add welfare claim for ${member} in i8 All-In-One App`);
     res.status(201).json({ success: true });
   } catch (error) {
     res.status(500).json({ error: 'Failed to submit welfare' });
@@ -236,114 +313,69 @@ app.post('/welfare', async (req, res) => {
 });
 
 // Polls
-app.get('/polls', async (req, res) => {
+app.get('/polls', (req, res) => {
   try {
-    const polls = await runQuery('polls', 'select');
-    res.json(polls.map(p => ({
-      id: p.id,
-      question: p.question,
-      options: JSON.parse(p.options || '[]'),
-      votes: JSON.parse(p.votes || '[]'),
-      voters: JSON.parse(p.voters || '[]'),
-      active: p.active
-    })));
+    const polls = await getData('Polls.json');
+    res.json(polls);
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch polls' });
   }
 });
 
-app.post('/polls', authMiddleware, async (req, res) => {
+app.post('/polls', authMiddleware, (req, res) => {
   const { question, options } = req.body;
-  if (!question || !Array.isArray(options) || options.length < 2) return res.status(400).json({ error: 'Question and 2+ options array required' });
+  if (!question || !options || options.length < 2) return res.status(400).json({ error: 'Invalid input' });
   try {
-    const id = Date.now();
-    await runQuery('polls', 'insert', {
-      id,
-      question,
-      options: JSON.stringify(options),
-      votes: JSON.stringify(new Array(options.length).fill(0)),
-      voters: JSON.stringify([]),
-      createdAt: new Date().toLocaleString()
-    });
+    const polls = await getData('Polls.json');
+    const id = polls.length + 1;
+    polls.push({ id, question, options, votes: new Array(options.length).fill(0), voters: [], active: true, createdAt: new Date().toLocaleString() });
+    await saveData('Polls.json', polls, `Add poll ${question} in i8 All-In-One App`);
     res.status(201).json({ success: true });
   } catch (error) {
     res.status(500).json({ error: 'Failed to create poll' });
   }
 });
 
-// Loans
-app.get('/loans', async (req, res) => {
-  const { member, status } = req.query;
-  try {
-    const filters = { ...(member && { member }), ...(status && { status }) };
-    const loans = await runQuery('loans', 'select', {}, filters);
-    res.json(loans);
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to fetch loans' });
-  }
-});
-
-app.post('/loans', async (req, res) => {
-  const { amount, purpose, member } = req.body;
-  if (!amount || amount <= 0 || !purpose || !member) return res.status(400).json({ error: 'Invalid input' });
-  try {
-    const id = Date.now();
-    await runQuery('loans', 'insert', { id, amount: parseInt(amount), purpose, member, date: new Date().toLocaleDateString() });
-    res.status(201).json({ success: true, id });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to submit loan' });
-  }
-});
-
-app.patch('/loans/:id', authMiddleware, async (req, res) => {
-  const { id } = req.params;
-  const { status, notes } = req.body;
-  if (!['treasurer', 'secretary', 'chairperson'].includes(req.user.role)) return res.status(403).json({ error: 'Unauthorized' });
-  try {
-    const updateData = { status };
-    if (notes) updateData.notes = notes;
-    await runQuery('loans', 'update', updateData, { id });
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: 'Update failed' });
-  }
-});
-
 // Chair Queue
-app.get('/chair-queue', authMiddleware, async (req, res) => {
+app.get('/chair-queue', authMiddleware, (req, res) => {
   try {
-    const queue = await runQuery('chairqueue', 'select');
+    const queue = await getData('ChairQueue.json');
     res.json(queue);
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch queue' });
   }
 });
 
-app.post('/chair-queue', authMiddleware, async (req, res) => {
+app.post('/chair-queue', authMiddleware, (req, res) => {
   const { type, data, author } = req.body;
+  if (!type || !author) return res.status(400).json({ error: 'Invalid input' });
   try {
+    const queue = await getData('ChairQueue.json');
     const id = Date.now().toString();
-    await runQuery('chairqueue', 'insert', { id, type, data: JSON.stringify(data), author, createdAt: new Date().toLocaleString() });
+    queue.push({ id, type, data, author, status: 'Pending', createdAt: new Date().toLocaleString() });
+    await saveData('ChairQueue.json', queue, `Add queue item ${type} by ${author} in i8 All-In-One App`);
     res.status(201).json({ success: true });
   } catch (error) {
     res.status(500).json({ error: 'Failed to add to queue' });
   }
 });
 
-app.patch('/chair-queue/:id/approve', authMiddleware, async (req, res) => {
+app.patch('/chair-queue/:id/approve', authMiddleware, (req, res) => {
   if (req.user.role !== 'chairperson') return res.status(403).json({ error: 'Chair only' });
   const { id } = req.params;
   const { signature } = req.body;
   try {
-    const updateData = { status: 'Approved' };
-    if (signature) updateData.signature = signature;
-    await runQuery('chairqueue', 'update', updateData, { id });
-    // Publish to news or approvedreports based on type
-    const { data: item } = await supabase.from('chairqueue').select('*').eq('id', id).single();
-    if (item && item.type === 'Minutes') {
-      await runQuery('news', 'insert', { text: item.data.text, signedBy: req.user.name, createdAt: new Date().toLocaleString() });
-    } else if (item && item.type === 'Report') {
-      await runQuery('approvedreports', 'insert', { text: item.data.text, signedBy: req.user.name });
+    const queue = await getData('ChairQueue.json');
+    const item = queue.find(q => q.id === id);
+    if (!item) return res.status(404).json({ error: 'Item not found' });
+    item.status = 'Approved';
+    if (signature) item.signature = signature;
+    await saveData('ChairQueue.json', queue, `Approve queue ${id} in i8 All-In-One App`);
+    // Auto-publish if minutes
+    if (item.type === 'Minutes') {
+      const news = await getData('News.json');
+      news.push({ id: news.length + 1, text: item.data.text, signedBy: req.user.name, createdAt: new Date().toLocaleString() });
+      await saveData('News.json', news, `Publish minutes from queue in i8 All-In-One App`);
     }
     res.json({ success: true });
   } catch (error) {
@@ -351,41 +383,68 @@ app.patch('/chair-queue/:id/approve', authMiddleware, async (req, res) => {
   }
 });
 
-// Approved Reports
-app.get('/approved-reports', async (req, res) => {
+// Aproved Reports
+app.get('/approved-reports', (req, res) => {
   try {
-    const reports = await runQuery('approvedreports', 'select');
+    const reports = await getData('AprovedReports.json');
     res.json(reports);
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch reports' });
   }
 });
 
-app.post('/approved-reports', authMiddleware, async (req, res) => {
+app.post('/approved-reports', authMiddleware, (req, res) => {
   const { text, file, signedBy } = req.body;
-  if (!text || !signedBy) return res.status(400).json({ error: 'Text and signedBy required' });
+  if (!text || !signedBy) return res.status(400).json({ error: 'Invalid input' });
   try {
-    await runQuery('approvedreports', 'insert', { text, file, signedBy });
+    const reports = await getData('AprovedReports.json');
+    reports.push({ id: reports.length + 1, text, file, signedBy });
+    await saveData('AprovedReports.json', reports, `Add report by ${signedBy} in i8 All-In-One App`);
     res.status(201).json({ success: true });
   } catch (error) {
     res.status(500).json({ error: 'Failed to add report' });
   }
 });
 
-// Logs
-app.get('/logs', authMiddleware, async (req, res) => {
+// Docs Upload (Documents like minutes, constitution)
+app.post('/upload-docs', authMiddleware, (req, res) => {
+  const { fileName, fileData, signedBy } = req.body; // fileData = base64
+  if (!fileName || !fileData || !signedBy) return res.status(400).json({ error: 'Invalid input' });
   try {
-    const logs = await runQuery('logs', 'select');
+    const docs = await getData('Docs.json');
+    docs[fileName] = { data: fileData, signedBy, uploadedAt: new Date().toISOString() };
+    await saveData('Docs.json', docs, `Upload doc ${fileName} by ${signedBy} in i8 All-In-One App`);
+    res.status(201).json({ success: true, message: 'Document uploaded' });
+  } catch (error) {
+    res.status(500).json({ error: 'Upload failed' });
+  }
+});
+
+app.get('/docs', authMiddleware, (req, res) => {
+  try {
+    const docs = await getData('Docs.json');
+    res.json(docs);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch docs' });
+  }
+});
+
+// Logs
+app.get('/logs', authMiddleware, (req, res) => {
+  try {
+    const logs = await getData('Logs.json');
     res.json(logs);
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch logs' });
   }
 });
 
-app.post('/logs', authMiddleware, async (req, res) => {
+app.post('/logs', authMiddleware, (req, res) => {
   const { action, details } = req.body;
   try {
-    await runQuery('logs', 'insert', { action, by: req.user.name, details, timestamp: new Date().toLocaleString() });
+    const logs = await getData('Logs.json');
+    logs.push({ id: logs.length + 1, action, by: req.user.name, details, timestamp: new Date().toLocaleString() });
+    await saveData('Logs.json', logs, `Add log ${action} in i8 All-In-One App`);
     res.status(201).json({ success: true });
   } catch (error) {
     res.status(500).json({ error: 'Log failed' });
@@ -393,70 +452,65 @@ app.post('/logs', authMiddleware, async (req, res) => {
 });
 
 // Notifications
-app.get('/notifications', authMiddleware, async (req, res) => {
+app.get('/notifications', authMiddleware, (req, res) => {
   const { member } = req.query;
   try {
-    const filters = member ? { member } : {};
-    const notifications = await runQuery('notifications', 'select', {}, filters);
-    res.json(notifications);
+    const notifications = await getData('Notifications.json');
+    let filtered = notifications;
+    if (member) filtered = filtered.filter(n => n.member === member);
+    res.json(filtered);
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch notifications' });
   }
 });
 
-app.post('/notifications', authMiddleware, async (req, res) => {
+app.post('/notifications', authMiddleware, (req, res) => {
   const { message, member } = req.body;
-  if (!message || !member) return res.status(400).json({ error: 'Message and member required' });
+  if (!message || !member) return res.status(400).json({ error: 'Invalid input' });
   try {
-    await runQuery('notifications', 'insert', { message, member, read: false });
+    const notifications = await getData('Notifications.json');
+    notifications.push({ id: notifications.length + 1, message, member, read: false });
+    await saveData('Notifications.json', notifications, `Add notification for ${member} in i8 All-In-One App`);
     res.status(201).json({ success: true });
   } catch (error) {
     res.status(500).json({ error: 'Failed to add notification' });
   }
 });
 
-app.patch('/notifications/:id/read', authMiddleware, async (req, res) => {
+app.patch('/notifications/:id/read', authMiddleware, (req, res) => {
   const { id } = req.params;
   try {
-    await runQuery('notifications', 'update', { read: true }, { id });
+    const notifications = await getData('Notifications.json');
+    const notification = notifications.find(n => n.id === parseInt(id));
+    if (!notification) return res.status(404).json({ error: 'Not found' });
+    notification.read = true;
+    await saveData('Notifications.json', notifications, `Mark notification ${id} read in i8 All-In-One App`);
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: 'Update failed' });
   }
 });
 
-// Export (CSV for supervisory)
-app.get('/export/:type', authMiddleware, async (req, res) => {
-  if (req.user.role !== 'supervisorycommittee') return res.status(403).json({ error: 'Unauthorized' });
-  const type = req.params.type;
-  try {
-    const data = await runQuery(type, 'select');
-    const csv = [Object.keys(data[0] || {}).join(',')].concat(data.map(row => Object.values(row).join(','))).join('\n');
-    res.setHeader('Content-Type', 'text/csv');
-    res.setHeader('Content-Disposition', `attachment; filename=${type}.csv`);
-    res.send(csv);
-  } catch (error) {
-    res.status(500).json({ error: 'Export failed' });
-  }
-});
-
 // Transactions
-app.get('/transactions', authMiddleware, async (req, res) => {
+app.get('/transactions', authMiddleware, (req, res) => {
   const { member } = req.query;
   try {
-    const filters = member ? { member } : {};
-    const transactions = await runQuery('transactions', 'select', {}, filters);
-    res.json(transactions);
+    const transactions = await getData('Transactions.json');
+    let filtered = transactions;
+    if (member) filtered = filtered.filter(t => t.member === member);
+    res.json(filtered);
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch transactions' });
   }
 });
 
-app.post('/transactions', authMiddleware, async (req, res) => {
+app.post('/transactions', authMiddleware, (req, res) => {
   const { title, date, amount, type, member } = req.body;
-  if (!title || !amount || !type || !member) return res.status(400).json({ error: 'Required fields missing' });
+  if (!title || !amount || !type || !member) return res.status(400).json({ error: 'Invalid input' });
   try {
-    await runQuery('transactions', 'insert', { title, date, amount: parseInt(amount), type, member });
+    const transactions = await getData('Transactions.json');
+    transactions.push({ id: transactions.length + 1, title, date, amount: parseInt(amount), type, member });
+    await saveData('Transactions.json', transactions, `Add transaction for ${member} in i8 All-In-One App`);
     res.status(201).json({ success: true });
   } catch (error) {
     res.status(500).json({ error: 'Failed to add transaction' });
@@ -464,20 +518,22 @@ app.post('/transactions', authMiddleware, async (req, res) => {
 });
 
 // Signatures
-app.get('/signatures', authMiddleware, async (req, res) => {
+app.get('/signatures', authMiddleware, (req, res) => {
   try {
-    const signatures = await runQuery('signatures', 'select');
-    res.json(signatures.reduce((acc, s) => ({ ...acc, [s.role]: s.signature }), {}));
+    const signatures = await getData('Signatures.json');
+    res.json(signatures);
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch signatures' });
   }
 });
 
-app.post('/signatures', authMiddleware, async (req, res) => {
+app.post('/signatures', authMiddleware, (req, res) => {
   const { role, signature } = req.body;
-  if (!role || !signature) return res.status(400).json({ error: 'Role and signature required' });
+  if (!role || !signature) return res.status(400).json({ error: 'Invalid input' });
   try {
-    await runQuery('signatures', 'insert', { role, signature });
+    const signatures = await getData('Signatures.json');
+    signatures[role] = signature;
+    await saveData('Signatures.json', signatures, `Add signature for ${role} in i8 All-In-One App`);
     res.status(201).json({ success: true });
   } catch (error) {
     res.status(500).json({ error: 'Failed to add signature' });
@@ -487,5 +543,7 @@ app.post('/signatures', authMiddleware, async (req, res) => {
 // Logout
 app.post('/logout', (req, res) => res.json({ success: true }));
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server on port ${PORT}`));
+// Health
+app.get('/health', (req, res) => res.json({ status: 'OK', message: 'i8 All-In-One App Backend Running' }));
+
+app.listen(port, () => console.log(`i8 All-In-One App Backend on port ${port}`));
